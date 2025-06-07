@@ -1,57 +1,68 @@
-import requests
+from urllib.parse import quote
+
+import aiohttp
+import asyncio
+import feedparser
+from datetime import datetime, date
 from bs4 import BeautifulSoup
-import urllib.parse
-import time
+from urllib.parse import quote
 
-def google_news_search_with_date(brand, start_date, end_date, max_pages=2, delay=2):
-    query = f"{brand} after:{start_date} before:{end_date}"
-    base_url = "https://www.google.com/search"
-    headers = {
-        "User-Agent": "Mozilla/5.0"
-    }
 
-    all_articles = []
 
-    for page in range(max_pages):
-        params = {
-            "q": query,
-            "tbm": "nws",
-            "start": page * 10
-        }
+def build_google_news_url(query, lang="pt", country="BR", start_date=None, end_date=None):
+    encoded_query = quote(query)
+    date_filter = ""
+    if end_date:
+        date_filter += f"%20before%3A{end_date.strftime('%Y-%m-%d')}"
+    if start_date:
+        date_filter += f"%20after%3A{start_date.strftime('%Y-%m-%d')}"
+    return (
+        f"https://news.google.com/rss/search?q={encoded_query}{date_filter}"
+        f"&hl={lang}&gl={country}&ceid={country}:{lang}"
+    )
 
-        response = requests.get(base_url, headers=headers, params=params)
-        if response.status_code != 200:
-            print(f"Error: status code {response.status_code}")
-            break
 
-        soup = BeautifulSoup(response.text, "html.parser")
-        results = soup.select("div.dbsr")
+def clean_html(text):
+    return BeautifulSoup(text, "html.parser").get_text().replace("\xa0", " ").strip()
 
-        if not results:
-            print(" more results.")
-            break
 
-        for result in results:
-            link = result.a["href"]
-            title = result.select_one("div.JheGif.nDgy9d").text
-            source = result.select_one("div.CEMjEf span.xQ82C.e8fRJf")
-            time_tag = result.select_one("span.WG9SHc span")
+async def fetch_news(session, url, max_results=30):
+    async with session.get(url, headers={"User-Agent": "Mozilla/5.0"}) as response:
+        if response.status != 200:
+            print(f"Failed to fetch: {url}")
+            return []
 
-            all_articles.append({
-                "title": title,
-                "link": link,
-                "source": source.text if source else ne,
-                "time": time_tag.text if time_tag else ne
+        text = await response.text()
+        feed = feedparser.parse(text)
+
+        articles = []
+        for entry in feed.entries[:max_results]:
+            articles.append({
+                "title": entry.get("title", ""),
+                "description": clean_html(entry.get("description", "")),
+                "url": entry.get("link", ""),
+                "published": entry.get("published", ""),
+                "source": entry.get("source", {}).get("title", "")
             })
+        return articles
 
-        time.sleep(delay)
 
-    return all_articles
+async def get_news_async(query, start_date=None, end_date=None, lang="pt", country="BR", max_results=30):
+    url = build_google_news_url(query, lang, country, start_date, end_date)
+    async with aiohttp.ClientSession() as session:
+        return await fetch_news(session, url, max_results)
 
-# === Example ===
+
+# === Usage example
 if __name__ == "__main__":
-    articles = google_news_search_with_date("Eletrobras", "2020-01-01", "2020-12-31")
-    for art in articles:
-        print(f"{art['time'] or 'N/A'} - {art['title']}")
-        print(f"{art['link']} ({art['source']})\n")
-        
+    async def main():
+        brand = "Eletrobras"
+        start = date(2020, 1, 1)
+        end = date(2020, 12, 31)
+        articles = await get_news_async(brand, start, end)
+
+        for art in articles:
+            print(f"{art['published']} - {art['title']}")
+            print(f"{art['url']} ({art['source']})\n")
+
+    asyncio.run(main())
